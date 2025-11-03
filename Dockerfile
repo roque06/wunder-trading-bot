@@ -24,3 +24,5 @@ RUN apt-get update && apt-get install -y curl build-essential && \
 
 # Comando por defecto para ejecutar tu bot
 CMD ["poetry", "run", "python", "smart_trading_bot.py"]
+CMD poetry run python smart_trading_bot.py & python -m http.server 8080
+
