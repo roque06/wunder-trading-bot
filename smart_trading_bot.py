@@ -21,11 +21,11 @@ capital = INITIAL_CAPITAL
 # ==============================
 EMA_FAST, EMA_SLOW = 9, 21
 RSI_PERIOD = 14
-RSI_LONG_MIN, RSI_LONG_MAX = 40, 65
-RSI_SHORT_MIN, RSI_SHORT_MAX = 35, 60
+RSI_LONG_MIN, RSI_LONG_MAX = 40, 70
+RSI_SHORT_MIN, RSI_SHORT_MAX = 30, 65
 EMA_DIFF_MARGIN = 0.001  # 0.1% diferencia mínima para confirmar cruce
 ATR_PERIOD = 14
-ATR_MULT_RANGE_BLOCK = 0.15
+ATR_MULT_RANGE_BLOCK = 0.10
 ATR_ACTIVE_FACTOR = 1.0
 ATR_SL_MULT = 1.8
 ATR_TP_MULT = 2.0
@@ -249,4 +249,5 @@ if __name__ == "__main__":
     print("✅ Binance respondió correctamente, iniciando cálculos...")
     test_telegram()
     main()
+
 
