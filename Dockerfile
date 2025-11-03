@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y curl build-essential && \
     poetry install --no-root && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Comando por defecto para ejecutar tu bot
-CMD ["poetry", "run", "python", "smart_trading_bot.py"]
-CMD poetry run python smart_trading_bot.py & python -m http.server 8080
-
+# =========================================
+# Ejecuta el bot + abre un puerto ficticio para Render Free
+# =========================================
+CMD bash -c "poetry run python smart_trading_bot.py & python -m http.server 8080"
