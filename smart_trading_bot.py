@@ -194,11 +194,9 @@ def main():
     print("🚀 Bot de trading inteligente iniciado.")
     send_telegram_message("🤖 Bot activo y escuchando el mercado...")
 
-    last_perf_ping_minute = None
-
     while True:
-        last_activity_time = time.time()
         try:
+            last_activity_time = time.time()
             for SYMBOL in SYMBOLS:
                 state = load_state(SYMBOL)
                 df = compute_indicators(fetch_klines(SYMBOL, INTERVAL, 300))
@@ -212,14 +210,17 @@ def main():
 
                 if in_range_zone(price, ema_f, ema_s) or not atr_active(atr_now, atr_ma):
                     print(f"⏸️ {SYMBOL} lateral/baja volatilidad. Sin operación.", flush=True)
+                    print("💤 Esperando nueva oportunidad...", flush=True)
                 else:
-                    pass  # Aquí irá tu lógica de entradas/salidas
+                    print("🟢 Condiciones listas para operar...", flush=True)
 
             time.sleep(POLL_SECONDS)
 
         except Exception as e:
-            print("⚠️ Error general:", e, flush=True)
+            print("⚠️ Error general en main():", e, flush=True)
+            send_telegram_message(f"⚠️ Error en main(): {e}")
             time.sleep(15)
+
 
 # ==============================
 # WATCHDOG
@@ -234,6 +235,7 @@ def watchdog():
             os.execv(sys.executable, ['python'] + sys.argv)
         time.sleep(60)
 
+
 # ==============================
 # EJECUCIÓN
 # ==============================
@@ -243,3 +245,4 @@ if __name__ == "__main__":
     threading.Thread(target=keep_alive, daemon=True).start()
     threading.Thread(target=watchdog, daemon=True).start()
     main()
+
