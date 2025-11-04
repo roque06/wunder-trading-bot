@@ -1,15 +1,15 @@
-import os, time, json, requests, pandas as pd, ta, threading
+import os, time, json, sys, requests, pandas as pd, ta, threading
 from datetime import datetime, UTC
 
 # ==============================
 # CONFIG GENERAL
 # ==============================
-SYMBOLS = ["BTCUSDT"]  # Puedes añadir más símbolos aquí
+SYMBOLS = ["BTCUSDT"]  # Puedes añadir más símbolos
 INTERVAL = "5m"
 WUNDER_WEBHOOK = "https://wtalerts.com/bot/custom"
 POLL_SECONDS = 60
 LOG_CSV = "trades_log.csv"
-STATE_FILE_TPL = "state_{symbol}.json"   # estado por símbolo
+STATE_FILE_TPL = "state_{symbol}.json"   # Estado por símbolo
 MIN_HOLD_BARS = 3
 DUP_SIGNAL_COOLDOWN_SEC = 10
 
@@ -21,11 +21,10 @@ capital = INITIAL_CAPITAL
 # ==============================
 EMA_FAST, EMA_SLOW = 9, 21
 RSI_PERIOD = 14
-# Rangos base; luego se adaptan por volatilidad
 RSI_LONG_MIN, RSI_LONG_MAX   = 40, 65
 RSI_SHORT_MIN, RSI_SHORT_MAX = 35, 60
 
-EMA_DIFF_MARGIN = 0.001  # 0.1% diferencia mínima para confirmar cruce
+EMA_DIFF_MARGIN = 0.001
 ATR_PERIOD = 14
 ATR_MULT_RANGE_BLOCK = 0.15
 ATR_ACTIVE_FACTOR = 1.0
@@ -136,7 +135,7 @@ def fetch_klines(symbol, interval, limit=500, retries=5, backoff=5):
             return df
 
         except Exception as e:
-            print(f"⚠️ Error Binance (intento {i+1}/{retries}): {e}")
+            print(f"⚠️ Error Binance (intento {i+1}/{retries}): {e}", flush=True)
             time.sleep(backoff * (i + 1))
 
     raise RuntimeError("⚠️ Binance no responde tras varios intentos.")
@@ -156,15 +155,6 @@ def send_signal(symbol: str, code: str):
         save_state(symbol, state)
     except Exception as e:
         print(f"⚠️ Error enviando señal {symbol}: {e}", flush=True)
-
-def log_trade(symbol: str, **kw):
-    os.makedirs(os.path.dirname(LOG_CSV) or ".", exist_ok=True)
-    row = {"symbol": symbol, **kw, "ts_utc": datetime.now(UTC).isoformat()}
-    try:
-        pd.DataFrame([row]).to_csv(LOG_CSV, mode="a",
-                                   header=not os.path.exists(LOG_CSV), index=False)
-    except Exception as e:
-        print("⚠️ Error escribiendo CSV:", e, flush=True)
 
 # ==============================
 # INDICADORES
@@ -191,21 +181,23 @@ def keep_alive():
     while True:
         try:
             requests.get(url, timeout=10)
-            print("🔁 Ping de mantenimiento enviado a Render")
+            print("🔁 Ping de mantenimiento enviado a Render", flush=True)
         except Exception as e:
-            print("⚠️ Error al enviar ping:", e)
-        time.sleep(240)  # cada 4 minutos
+            print("⚠️ Error al enviar ping:", e, flush=True)
+        time.sleep(240)
 
 # ==============================
 # MONITOR PRINCIPAL
 # ==============================
 def main():
+    global last_activity_time
     print("🚀 Bot de trading inteligente iniciado.")
     send_telegram_message("🤖 Bot activo y escuchando el mercado...")
 
     last_perf_ping_minute = None
 
     while True:
+        last_activity_time = time.time()
         try:
             for SYMBOL in SYMBOLS:
                 state = load_state(SYMBOL)
@@ -218,20 +210,10 @@ def main():
 
                 print(f"⏱️ {datetime.now(UTC)} | {SYMBOL} | P={price:.2f} | EMA9={ema_f:.2f} | EMA21={ema_s:.2f} | RSI={rsi:.1f} | ATR={atr_now:.2f} | Pos={state.get('last_side')}", flush=True)
 
-                # ===== RSI ADAPTATIVO =====
-                vol_factor = (atr_now / atr_ma) if (atr_ma and atr_ma > 0) else 1.0
-                adj = max(0, min(10, 5 * vol_factor))
-                RSI_LONG_MIN_ADJ   = max(30, RSI_LONG_MIN - adj)
-                RSI_LONG_MAX_ADJ   = min(70, RSI_LONG_MAX + adj)
-                RSI_SHORT_MIN_ADJ  = max(30, RSI_SHORT_MIN - adj)
-                RSI_SHORT_MAX_ADJ  = min(70, RSI_SHORT_MAX + adj)
-
-                # ===== Evitar operar en rango =====
                 if in_range_zone(price, ema_f, ema_s) or not atr_active(atr_now, atr_ma):
                     print(f"⏸️ {SYMBOL} lateral/baja volatilidad. Sin operación.", flush=True)
                 else:
-                    # (Lógica de operaciones igual que tu versión)
-                    pass
+                    pass  # Aquí irá tu lógica de entradas/salidas
 
             time.sleep(POLL_SECONDS)
 
@@ -240,10 +222,24 @@ def main():
             time.sleep(15)
 
 # ==============================
+# WATCHDOG
+# ==============================
+def watchdog():
+    global last_activity_time
+    last_activity_time = time.time()
+    while True:
+        if time.time() - last_activity_time > 300:
+            print("⚠️ Watchdog: No hay actividad en 5 minutos, reiniciando bot...", flush=True)
+            send_telegram_message("⚠️ Watchdog detectó inactividad. Reiniciando bot.")
+            os.execv(sys.executable, ['python'] + sys.argv)
+        time.sleep(60)
+
+# ==============================
 # EJECUCIÓN
 # ==============================
 if __name__ == "__main__":
     print("✅ Binance respondió correctamente, iniciando cálculos...", flush=True)
     test_telegram()
     threading.Thread(target=keep_alive, daemon=True).start()
+    threading.Thread(target=watchdog, daemon=True).start()
     main()
