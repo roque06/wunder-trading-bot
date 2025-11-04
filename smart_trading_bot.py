@@ -4,12 +4,12 @@ from datetime import datetime, UTC
 # ==============================
 # CONFIG GENERAL
 # ==============================
-SYMBOL = "BTCUSDT"
+SYMBOLS = ["BTCUSDT"]  # Puedes añadir: ["BTCUSDT","ETHUSDT","SOLUSDT",...]
 INTERVAL = "5m"
 WUNDER_WEBHOOK = "https://wtalerts.com/bot/custom"
 POLL_SECONDS = 60
 LOG_CSV = "trades_log.csv"
-STATE_FILE = "bot_state.json"
+STATE_FILE_TPL = "state_{symbol}.json"   # estado por símbolo
 MIN_HOLD_BARS = 3
 DUP_SIGNAL_COOLDOWN_SEC = 10
 
@@ -21,21 +21,29 @@ capital = INITIAL_CAPITAL
 # ==============================
 EMA_FAST, EMA_SLOW = 9, 21
 RSI_PERIOD = 14
-RSI_LONG_MIN, RSI_LONG_MAX = 40, 70
-RSI_SHORT_MIN, RSI_SHORT_MAX = 30, 65
+# Rangos base; luego se adaptan por volatilidad
+RSI_LONG_MIN, RSI_LONG_MAX   = 40, 65
+RSI_SHORT_MIN, RSI_SHORT_MAX = 35, 60
+
 EMA_DIFF_MARGIN = 0.001  # 0.1% diferencia mínima para confirmar cruce
 ATR_PERIOD = 14
-ATR_MULT_RANGE_BLOCK = 0.10
+ATR_MULT_RANGE_BLOCK = 0.15
 ATR_ACTIVE_FACTOR = 1.0
 ATR_SL_MULT = 1.8
 ATR_TP_MULT = 2.0
 
 # ==============================
 # CÓDIGOS DE SEÑALES WUNDER
+# Por símbolo (por ahora solo BTCUSDT configurado)
 # ==============================
-ENTER_LONG  = "ENTER-LONG_Binance_BTCUSDT_BTC-BOT_5M_d99ea7958787b1d1fa0e0978"
-ENTER_SHORT = "ENTER-SHORT_Binance_BTCUSDT_BTC-BOT_5M_d99ea7958787b1d1fa0e0978"
-EXIT_ALL    = "EXIT-ALL_Binance_BTCUSDT_BTC-BOT_5M_d99ea7958787b1d1fa0e0978"
+SIGNAL_CODES = {
+    "BTCUSDT": {
+        "ENTER_LONG":  "ENTER-LONG_Binance_BTCUSDT_BTC-BOT_5M_d99ea7958787b1d1fa0e0978",
+        "ENTER_SHORT": "ENTER-SHORT_Binance_BTCUSDT_BTC-BOT_5M_d99ea7958787b1d1fa0e0978",
+        "EXIT_ALL":    "EXIT-ALL_Binance_BTCUSDT_BTC-BOT_5M_d99ea7958787b1d1fa0e0978",
+    },
+    # "ETHUSDT": {...}
+}
 
 # ==============================
 # TELEGRAM
@@ -44,7 +52,6 @@ TELEGRAM_TOKEN = "7543685147:AAGtQjY-wA97qmUTsahux75MQ-8vYeDgcls"
 TELEGRAM_CHAT_ID = "1216693645"
 
 def send_telegram_message(text: str):
-    """Envía mensajes a Telegram."""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
     try:
@@ -52,12 +59,11 @@ def send_telegram_message(text: str):
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
         r = requests.post(url, data=payload, timeout=10)
         if r.status_code != 200:
-            print(f"⚠️ Error Telegram: {r.status_code}")
+            print(f"⚠️ Error Telegram: {r.status_code}", flush=True)
     except Exception as e:
-        print("❌ Error enviando a Telegram:", e)
+        print("❌ Error enviando a Telegram:", e, flush=True)
 
 def test_telegram():
-    """Prueba inicial de conexión a Telegram."""
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         payload = {
@@ -67,29 +73,36 @@ def test_telegram():
         }
         r = requests.post(url, data=payload, timeout=10)
         if r.status_code == 200:
-            print("📩 Prueba de Telegram enviada correctamente ✅")
+            print("📩 Prueba de Telegram enviada correctamente ✅", flush=True)
         else:
-            print(f"⚠️ Telegram devolvió error: {r.status_code}")
+            print(f"⚠️ Telegram devolvió error: {r.status_code}", flush=True)
     except Exception as e:
-        print("❌ Error durante la prueba de Telegram:", e)
+        print("❌ Error durante la prueba de Telegram:", e, flush=True)
 
 # ==============================
-# ESTADO
+# ESTADO (por símbolo)
 # ==============================
-def load_state():
-    if not os.path.exists(STATE_FILE):
-        return {"last_side": None, "entry_price": None, "bars_held": 0, "last_signal": "", "last_signal_ts": 0}
+def state_path(symbol: str) -> str:
+    return STATE_FILE_TPL.format(symbol=symbol)
+
+def load_state(symbol: str):
+    path = state_path(symbol)
+    if not os.path.exists(path):
+        return {"last_side": None, "entry_price": None, "bars_held": 0,
+                "last_signal": "", "last_signal_ts": 0}
     try:
-        with open(STATE_FILE, "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except:
-        return {"last_side": None, "entry_price": None, "bars_held": 0, "last_signal": "", "last_signal_ts": 0}
+        return {"last_side": None, "entry_price": None, "bars_held": 0,
+                "last_signal": "", "last_signal_ts": 0}
 
-def save_state(state: dict):
-    tmp = STATE_FILE + ".tmp"
+def save_state(symbol: str, state: dict):
+    path = state_path(symbol)
+    tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(state, f)
-    os.replace(tmp, STATE_FILE)
+    os.replace(tmp, path)
 
 # ==============================
 # FUNCIONES PRINCIPALES
@@ -137,29 +150,30 @@ def fetch_klines(symbol, interval, limit=500, retries=5, backoff=5):
 
     raise RuntimeError("⚠️ Binance no responde tras varios intentos.")
 
-def send_signal(code):
-    """Envía señal a WunderTrading y guarda estado."""
-    state = load_state()
+def send_signal(symbol: str, code: str):
+    state = load_state(symbol)
     now_ts = time.time()
     if state.get("last_signal") == code and (now_ts - state.get("last_signal_ts", 0)) < DUP_SIGNAL_COOLDOWN_SEC:
         return
     try:
         payload = {"code": code}
-        r = requests.post(WUNDER_WEBHOOK, json=payload, headers={"Content-Type": "application/json"}, timeout=10)
-        print(f"[{datetime.now(UTC)}] Signal -> {code} | status={r.status_code}")
+        r = requests.post(WUNDER_WEBHOOK, json=payload,
+                          headers={"Content-Type": "application/json"}, timeout=10)
+        print(f"[{datetime.now(UTC)}] {symbol} Signal -> {code} | status={r.status_code}", flush=True)
         state["last_signal"] = code
         state["last_signal_ts"] = now_ts
-        save_state(state)
+        save_state(symbol, state)
     except Exception as e:
-        print("⚠️ Error enviando señal:", e)
+        print(f"⚠️ Error enviando señal {symbol}: {e}", flush=True)
 
-def log_trade(**kw):
+def log_trade(symbol: str, **kw):
     os.makedirs(os.path.dirname(LOG_CSV) or ".", exist_ok=True)
-    row = {**kw, "ts_utc": datetime.now(UTC).isoformat()}
+    row = {"symbol": symbol, **kw, "ts_utc": datetime.now(UTC).isoformat()}
     try:
-        pd.DataFrame([row]).to_csv(LOG_CSV, mode="a", header=not os.path.exists(LOG_CSV), index=False)
+        pd.DataFrame([row]).to_csv(LOG_CSV, mode="a",
+                                   header=not os.path.exists(LOG_CSV), index=False)
     except Exception as e:
-        print("⚠️ Error escribiendo CSV:", e)
+        print("⚠️ Error escribiendo CSV:", e, flush=True)
 
 # ==============================
 # INDICADORES
@@ -181,73 +195,150 @@ def atr_active(atr_now, atr_ma):
 # ==============================
 # ENTRADAS Y SALIDAS
 # ==============================
-def place_entry(side: str, price: float, rsi: float):
-    state = load_state()
+def place_entry(symbol: str, side: str, price: float, rsi: float):
+    state = load_state(symbol)
     last_side = state.get("last_side")
     entry_price = state.get("entry_price")
 
+    codes = SIGNAL_CODES.get(symbol, SIGNAL_CODES["BTCUSDT"])
+
     if last_side and last_side != side:
-        send_signal(EXIT_ALL)
+        send_signal(symbol, codes["EXIT_ALL"])
         diff_pct = ((price - entry_price)/entry_price)*100 if last_side=="LONG" else ((entry_price - price)/entry_price)*100
-        log_trade(event=f"EXIT-{last_side}", price=price, rsi=rsi, profit_pct=diff_pct)
-        send_telegram_message(f"⚪ Cierre {last_side} por reversión | {'🟩' if diff_pct>0 else '🟥'} {diff_pct:.2f}%")
+        log_trade(symbol, event=f"EXIT-{last_side}", price=price, rsi=rsi, profit_pct=diff_pct)
+        send_telegram_message(f"⚪ {symbol} Cierre {last_side} por reversión | {'🟩' if diff_pct>0 else '🟥'} {diff_pct:.2f}%")
         time.sleep(5)
 
     if side == "LONG":
-        send_signal(ENTER_LONG)
-        send_telegram_message(f"🟢 LONG abierta a {price:.2f} USDT")
-        log_trade(event="ENTER-LONG", price=price, rsi=rsi)
+        send_signal(symbol, codes["ENTER_LONG"])
+        send_telegram_message(f"🟢 {symbol} LONG abierta a {price:.2f} USDT")
+        log_trade(symbol, event="ENTER-LONG", price=price, rsi=rsi)
     else:
-        send_signal(ENTER_SHORT)
-        send_telegram_message(f"🔴 SHORT abierta a {price:.2f} USDT")
-        log_trade(event="ENTER-SHORT", price=price, rsi=rsi)
+        send_signal(symbol, codes["ENTER_SHORT"])
+        send_telegram_message(f"🔴 {symbol} SHORT abierta a {price:.2f} USDT")
+        log_trade(symbol, event="ENTER-SHORT", price=price, rsi=rsi)
 
     time.sleep(10)
     state.update({"last_side": side, "entry_price": float(price), "bars_held": 0})
-    save_state(state)
+    save_state(symbol, state)
 
 # ==============================
-# MONITOR PRINCIPAL
+# MÉTRICAS DE RENDIMIENTO
+# ==============================
+def calculate_performance():
+    if not os.path.exists(LOG_CSV):
+        return 0, 0, 0
+    df = pd.read_csv(LOG_CSV)
+    if "profit_pct" not in df.columns or df.empty:
+        return 0, 0, 0
+    total_profit = df[df["profit_pct"] > 0]["profit_pct"].sum()
+    total_loss = abs(df[df["profit_pct"] < 0]["profit_pct"].sum())
+    profit_factor = (total_profit / total_loss) if total_loss > 0 else float('inf')
+    net_profit = total_profit - total_loss
+    num_trades = len(df)
+    return profit_factor, net_profit, num_trades
+
+# ==============================
+# MONITOR PRINCIPAL (OPTIMIZADO + SL/TP + RSI ADAPTATIVO)
 # ==============================
 def main():
     print("🚀 Bot de trading inteligente iniciado.")
     send_telegram_message("🤖 Bot activo y escuchando el mercado...")
 
-    state = load_state()
+    last_perf_ping_minute = None
+
     while True:
         try:
-            df = compute_indicators(fetch_klines(SYMBOL, INTERVAL, 300))
-            price = df["close"].iloc[-1]
-            ema_f, ema_s = df["ema_fast"].iloc[-1], df["ema_slow"].iloc[-1]
-            rsi = df["rsi"].iloc[-1]
-            atr_now, atr_ma = df["atr"].iloc[-1], df["atr_ma"].iloc[-1]
+            for SYMBOL in SYMBOLS:
+                state = load_state(SYMBOL)
+                df = compute_indicators(fetch_klines(SYMBOL, INTERVAL, 300))
 
-            print(f"⏱️ {datetime.now(UTC)} | Precio={price:.2f} | EMA9={ema_f:.2f} | EMA21={ema_s:.2f} | RSI={rsi:.1f} | ATR={atr_now:.2f} | Pos={state.get('last_side')}")
-            print(f"🔎 DEBUG → ema_f>ema_s? {ema_f>ema_s}, RSI={rsi:.1f}")
+                price = df["close"].iloc[-1]
+                ema_f, ema_s = df["ema_fast"].iloc[-1], df["ema_slow"].iloc[-1]
+                rsi = df["rsi"].iloc[-1]
+                atr_now, atr_ma = df["atr"].iloc[-1], df["atr_ma"].iloc[-1]
 
-            if in_range_zone(price, ema_f, ema_s) or not atr_active(atr_now, atr_ma):
-                time.sleep(POLL_SECONDS); continue
+                print(f"⏱️ {datetime.now(UTC)} | {SYMBOL} | P={price:.2f} | EMA9={ema_f:.2f} | EMA21={ema_s:.2f} | RSI={rsi:.1f} | ATR={atr_now:.2f} | Pos={state.get('last_side')}", flush=True)
 
-            last_side = state.get("last_side")
-            bars_held = state.get("bars_held", 0)
-            can_flip = (bars_held >= MIN_HOLD_BARS)
+                # ===== RSI ADAPTATIVO por volatilidad =====
+                vol_factor = (atr_now / atr_ma) if (atr_ma and atr_ma > 0) else 1.0
+                adj = max(0, min(10, 5 * vol_factor))  # cap de ajuste
+                RSI_LONG_MIN_ADJ   = max(30, RSI_LONG_MIN   - adj)
+                RSI_LONG_MAX_ADJ   = min(70, RSI_LONG_MAX   + adj)
+                RSI_SHORT_MIN_ADJ  = max(30, RSI_SHORT_MIN  - adj)
+                RSI_SHORT_MAX_ADJ  = min(70, RSI_SHORT_MAX  + adj)
 
-            if ema_f > ema_s * (1 + EMA_DIFF_MARGIN) and RSI_LONG_MIN <= rsi <= RSI_LONG_MAX and (last_side != "LONG" and (last_side is None or can_flip)):
-                place_entry("LONG", price, rsi)
-            elif ema_f < ema_s * (1 - EMA_DIFF_MARGIN) and RSI_SHORT_MIN <= rsi <= RSI_SHORT_MAX and (last_side != "SHORT" and (last_side is None or can_flip)):
-                place_entry("SHORT", price, rsi)
+                # ===== Evitar operar en rango o baja volatilidad =====
+                if in_range_zone(price, ema_f, ema_s) or not atr_active(atr_now, atr_ma):
+                    print(f"⏸️ {SYMBOL} lateral/baja volatilidad. Sin operación.", flush=True)
+                else:
+                    # ===== SL/TP AUTOMÁTICOS (si hay posición abierta) =====
+                    if state.get("entry_price") and state.get("last_side"):
+                        entry = state["entry_price"]
+                        side  = state["last_side"]
+                        sl = entry - atr_now * ATR_SL_MULT if side == "LONG" else entry + atr_now * ATR_SL_MULT
+                        tp = entry + atr_now * ATR_TP_MULT if side == "LONG" else entry - atr_now * ATR_TP_MULT
+
+                        if (side == "LONG" and (price <= sl or price >= tp)) or \
+                           (side == "SHORT" and (price >= sl or price <= tp)):
+                            codes = SIGNAL_CODES.get(SYMBOL, SIGNAL_CODES["BTCUSDT"])
+                            send_signal(SYMBOL, codes["EXIT_ALL"])
+                            profit_pct = ((price - entry)/entry)*100 if side == "LONG" else ((entry - price)/entry)*100
+                            send_telegram_message(f"🏁 {SYMBOL} Cierre automático {side} | {profit_pct:.2f}% | Precio={price:.2f}")
+                            log_trade(SYMBOL, event=f"AUTO-EXIT-{side}", price=price, rsi=rsi, profit_pct=profit_pct)
+                            state["last_side"] = None
+                            state["entry_price"] = None
+                            save_state(SYMBOL, state)
+                            print(f"🛑 {SYMBOL} {side} cerrado por SL/TP | Profit={profit_pct:.2f}%", flush=True)
+                            # continúa al siguiente símbolo
+                            continue
+
+                    # ===== Determinar TENDENCIA y actuar solo si CAMBIA =====
+                    trend_side = None
+                    if ema_f > ema_s * (1 + EMA_DIFF_MARGIN) and RSI_LONG_MIN_ADJ <= rsi <= RSI_LONG_MAX_ADJ:
+                        trend_side = "LONG"
+                    elif ema_f < ema_s * (1 - EMA_DIFF_MARGIN) and RSI_SHORT_MIN_ADJ <= rsi <= RSI_SHORT_MAX_ADJ:
+                        trend_side = "SHORT"
+
+                    last_side = state.get("last_side")
+                    if trend_side:
+                        if last_side != trend_side:
+                            # Si había posición, cerrarla antes (seguridad extra)
+                            if last_side:
+                                codes = SIGNAL_CODES.get(SYMBOL, SIGNAL_CODES["BTCUSDT"])
+                                send_signal(SYMBOL, codes["EXIT_ALL"])
+                                log_trade(SYMBOL, event=f"EXIT-{last_side}", price=price, rsi=rsi)
+                                send_telegram_message(f"⚪ {SYMBOL} Cierre {last_side} por cambio → {trend_side}")
+                                time.sleep(5)
+                            # Abrir nueva
+                            place_entry(SYMBOL, trend_side, price, rsi)
+                            state["last_side"] = trend_side
+                            state["entry_price"] = float(price)
+                            save_state(SYMBOL, state)
+                        else:
+                            print(f"⚙️ {SYMBOL} Tendencia {trend_side} continua — sin nueva señal.", flush=True)
+                    else:
+                        print(f"⏸️ {SYMBOL} sin tendencia clara, esperando señal...", flush=True)
+
+                # ===== Heartbeat / Métricas cada hora (minuto == 0) una vez =====
+                now_min = datetime.now().minute
+                if now_min == 0 and last_perf_ping_minute != 0 and SYMBOL == SYMBOLS[0]:
+                    pf, netp, trades = calculate_performance()
+                    send_telegram_message(f"📊 Rendimiento: PF={pf:.2f} | Net={netp:.2f}% | Trades={trades}")
+                    last_perf_ping_minute = 0
+                elif now_min != 0:
+                    last_perf_ping_minute = now_min
 
             time.sleep(POLL_SECONDS)
+
         except Exception as e:
-            print("⚠️ Error general:", e)
+            print("⚠️ Error general:", e, flush=True)
             time.sleep(15)
 
 # ==============================
 # EJECUCIÓN
 # ==============================
 if __name__ == "__main__":
-    print("✅ Binance respondió correctamente, iniciando cálculos...")
+    print("✅ Binance respondió correctamente, iniciando cálculos...", flush=True)
     test_telegram()
     main()
-
-
