@@ -35,7 +35,7 @@ ATR_TRAIL_MULT = 1.5
 MIN_PROFIT_TO_CLOSE = 0.3
 
 # 🔹 Break-even
-BREAKEVEN_TRIGGER = 1.0  # activa cuando gana +2%
+BREAKEVEN_TRIGGER = 1.0  # activa cuando gana +1%
 BREAKEVEN_OFFSET = 0.15  # se mueve a entrada ±0.1%
 
 # ==============================
@@ -76,7 +76,7 @@ def send_telegram_message(text: str):
         return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}  # ← sin parse_mode
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
         r = requests.post(url, data=payload, timeout=10)
         if r.status_code != 200:
             print(f"⚠️ Error Telegram: {r.status_code}", flush=True)
@@ -90,7 +90,7 @@ def test_telegram():
         payload = {
             "chat_id": TELEGRAM_CHAT_ID,
             "text": "✅ Prueba de conexión Telegram exitosa.\nEl bot ya puede enviarte notificaciones.",
-        }  # ← sin parse_mode
+        }
         r = requests.post(url, data=payload, timeout=10)
         if r.status_code == 200:
             print("📩 Prueba de Telegram enviada correctamente ✅", flush=True)
@@ -116,13 +116,12 @@ def load_state(symbol: str):
             "trail_price": None,
             "cooldown_until": 0,
             "breakeven_active": False,
-            "consecutive_losses": 0,  # 🆕
-            "last_pnl_pct": None,  # 🆕
+            "consecutive_losses": 0,
+            "last_pnl_pct": None,
         }
     try:
         with open(path, "r", encoding="utf-8") as f:
             s = json.load(f)
-            # asegurar claves nuevas
             s.setdefault("consecutive_losses", 0)
             s.setdefault("last_pnl_pct", None)
             s.setdefault("breakeven_active", False)
@@ -209,7 +208,7 @@ def send_signal(symbol: str, code: str):
 def compute_indicators(df):
     df["ema_fast"] = ta.trend.ema_indicator(df["close"], window=EMA_FAST)
     df["ema_slow"] = ta.trend.ema_indicator(df["close"], window=EMA_SLOW)
-    df["ema_long"] = ta.trend.ema_indicator(df["close"], window=EMA_LONG)  # 🆕
+    df["ema_long"] = ta.trend.ema_indicator(df["close"], window=EMA_LONG)
     df["rsi"] = ta.momentum.rsi(df["close"], window=RSI_PERIOD)
     df["atr"] = ta.volatility.average_true_range(
         df["high"], df["low"], df["close"], window=ATR_PERIOD
@@ -267,18 +266,15 @@ def main():
                     flush=True,
                 )
 
-                # ==== COOLDOWN ====
                 if state.get("cooldown_until", 0) > time.time():
                     remaining = int(state["cooldown_until"] - time.time())
                     print(f"⏸️ {SYMBOL} en cooldown {remaining}s restantes...")
                     continue
 
-                # ==== CONDICIONES BASE (EMA+RSI) ====
                 last_close = df["close"].iloc[-1]
                 prev_close = df["close"].iloc[-2]
                 last_open = df["open"].iloc[-1]
 
-                # Confirmación de vela + doble cruce (🆕)
                 ema_cross_up_now = ema_f > ema_s * (1 + EMA_DIFF_MARGIN)
                 ema_cross_up_prev = df["ema_fast"].iloc[-2] > df["ema_slow"].iloc[-2]
                 ema_cross_dn_now = ema_f < ema_s * (1 - EMA_DIFF_MARGIN)
@@ -290,7 +286,7 @@ def main():
                     and (RSI_LONG_MIN <= rsi <= RSI_LONG_MAX)
                     and (last_close > last_open)
                     and (last_close > prev_close)
-                    and (price > ema_long)  # filtro macro a favor
+                    and (price > ema_long)
                 )
                 bearish_ok = (
                     ema_cross_dn_now
@@ -298,10 +294,9 @@ def main():
                     and (RSI_SHORT_MIN <= rsi <= RSI_SHORT_MAX)
                     and (last_close < last_open)
                     and (last_close < prev_close)
-                    and (price < ema_long)  # filtro macro a favor
+                    and (price < ema_long)
                 )
 
-                # ==== TRADE ACTIVO ====
                 if side and entry:
                     profit_pct = (
                         ((price - entry) / entry * 100)
@@ -309,131 +304,50 @@ def main():
                         else ((entry - price) / entry * 100)
                     )
 
-                    # 🔁 Reversión limpia (mantengo tu lógica, con filtros nuevos)
-                    if side == "LONG" and bearish_ok:
-                        print(
-                            "🔁 Giro detectado: LONG → SHORT. Enviando EXIT-ALL y nueva entrada SHORT…"
-                        )
-                        send_signal(SYMBOL, SIGNAL_CODES[SYMBOL]["EXIT_ALL"])
-                        send_telegram_message(
-                            f"🔁 {SYMBOL} Cierre LONG por giro de tendencia."
-                        )
-                        # log y estado
-                        log_trade(SYMBOL, "LONG", entry, price, profit_pct)
-                        if profit_pct < 0:
-                            state["consecutive_losses"] = (
-                                state.get("consecutive_losses", 0) + 1
-                            )
-                        else:
-                            state["consecutive_losses"] = 0
-                        state.update({"last_pnl_pct": profit_pct})
-                        # Autopausa si excede pérdidas seguidas
-                        if state["consecutive_losses"] >= MAX_CONSECUTIVE_LOSSES:
-                            state["cooldown_until"] = time.time() + AUTO_PAUSE_SECONDS
+                    # 🧠 Protección dinámica de ganancias
+                    if side == "LONG":
+                        if profit_pct >= 3.0:
+                            new_trail = max(trail or entry, price - atr_now * 1.2)
+                            if new_trail > (trail or 0):
+                                trail = new_trail
+                                send_telegram_message(
+                                    f"🏁 {SYMBOL} Trailing avanzado ajustado a {trail:.2f}"
+                                )
+                        elif profit_pct >= 2.0:
+                            new_trail = entry * 1.005
+                            if not trail or new_trail > trail:
+                                trail = new_trail
+                                send_telegram_message(
+                                    f"🟢 {SYMBOL} Ganancia asegurada +0.5%"
+                                )
+                        elif not breakeven_active and profit_pct >= BREAKEVEN_TRIGGER:
+                            trail = entry
                             send_telegram_message(
-                                "🛑 Pausa automática por pérdidas consecutivas."
+                                f"🟩 {SYMBOL} Break-even activado a {trail:.2f}"
                             )
+                            state["breakeven_active"] = True
 
-                        # reset y posible reentrada
-                        state.update(
-                            {
-                                "last_side": None,
-                                "entry_price": None,
-                                "trail_price": None,
-                                "breakeven_active": False,
-                            }
-                        )
-                        save_state(SYMBOL, state)
-                        time.sleep(2)
-                        if bearish_ok and (atr_now <= atr_ma * VOLATILITY_MULT_LIMIT):
-                            # position sizing (teórico)
-                            risk_dollar = capital * (RISK_PCT / 100)
-                            pos_size = risk_dollar / max(atr_now * ATR_SL_MULT, 1e-9)
-                            size_info = f"risk={RISK_PCT:.2f}%, size≈{pos_size:.4f} (u)"
-                            send_signal(SYMBOL, SIGNAL_CODES[SYMBOL]["ENTER_SHORT"])
+                    elif side == "SHORT":
+                        if profit_pct >= 3.0:
+                            new_trail = min(trail or entry, price + atr_now * 1.2)
+                            if new_trail < (trail or 999999):
+                                trail = new_trail
+                                send_telegram_message(
+                                    f"🏁 {SYMBOL} Trailing avanzado ajustado a {trail:.2f}"
+                                )
+                        elif profit_pct >= 2.0:
+                            new_trail = entry * 0.995
+                            if not trail or new_trail < trail:
+                                trail = new_trail
+                                send_telegram_message(
+                                    f"🟢 {SYMBOL} Ganancia asegurada +0.5%"
+                                )
+                        elif not breakeven_active and profit_pct >= BREAKEVEN_TRIGGER:
+                            trail = entry
                             send_telegram_message(
-                                f"🚀 {SYMBOL} SHORT por reversión a {price:.2f}\n<size: {size_info}>"
+                                f"🟩 {SYMBOL} Break-even activado a {trail:.2f}"
                             )
-                            trail_init = price + atr_now * ATR_TRAIL_MULT
-                            state.update(
-                                {
-                                    "last_side": "SHORT",
-                                    "entry_price": price,
-                                    "trail_price": trail_init,
-                                    "breakeven_active": False,
-                                }
-                            )
-                            save_state(SYMBOL, state)
-                        continue
-
-                    if side == "SHORT" and bullish_ok:
-                        print(
-                            "🔁 Giro detectado: SHORT → LONG. Enviando EXIT-ALL y nueva entrada LONG…"
-                        )
-                        send_signal(SYMBOL, SIGNAL_CODES[SYMBOL]["EXIT_ALL"])
-                        send_telegram_message(
-                            f"🔁 {SYMBOL} Cierre SHORT por giro de tendencia."
-                        )
-                        log_trade(SYMBOL, "SHORT", entry, price, profit_pct)
-                        if profit_pct < 0:
-                            state["consecutive_losses"] = (
-                                state.get("consecutive_losses", 0) + 1
-                            )
-                        else:
-                            state["consecutive_losses"] = 0
-                        state.update({"last_pnl_pct": profit_pct})
-                        if state["consecutive_losses"] >= MAX_CONSECUTIVE_LOSSES:
-                            state["cooldown_until"] = time.time() + AUTO_PAUSE_SECONDS
-                            send_telegram_message(
-                                "🛑 Pausa automática por pérdidas consecutivas."
-                            )
-                        state.update(
-                            {
-                                "last_side": None,
-                                "entry_price": None,
-                                "trail_price": None,
-                                "breakeven_active": False,
-                            }
-                        )
-                        save_state(SYMBOL, state)
-                        time.sleep(2)
-                        if bullish_ok and (atr_now <= atr_ma * VOLATILITY_MULT_LIMIT):
-                            risk_dollar = capital * (RISK_PCT / 100)
-                            pos_size = risk_dollar / max(atr_now * ATR_SL_MULT, 1e-9)
-                            size_info = f"risk={RISK_PCT:.2f}%, size≈{pos_size:.4f} (u)"
-                            send_signal(SYMBOL, SIGNAL_CODES[SYMBOL]["ENTER_LONG"])
-                            send_telegram_message(
-                                f"🚀 {SYMBOL} LONG por reversión a {price:.2f}\n<size: {size_info}>"
-                            )
-                            trail_init = price - atr_now * ATR_TRAIL_MULT
-                            state.update(
-                                {
-                                    "last_side": "LONG",
-                                    "entry_price": price,
-                                    "trail_price": trail_init,
-                                    "breakeven_active": False,
-                                }
-                            )
-                            save_state(SYMBOL, state)
-                        continue
-
-                    # 🔹 Break-even automático
-                    if not breakeven_active and profit_pct >= BREAKEVEN_TRIGGER:
-                        if side == "LONG":
-                            trail = entry * (1 + BREAKEVEN_OFFSET / 100)
-                        else:
-                            trail = entry * (1 - BREAKEVEN_OFFSET / 100)
-                        send_telegram_message(
-                            f"🟩 <b>{SYMBOL} BREAK-EVEN ACTIVADO ✅</b>\n{side} protegido al {trail:.2f}"
-                        )
-                        state["breakeven_active"] = True
-
-                    # 🔹 Trailing avanzado
-                    if profit_pct > 0.8:
-                        if side == "LONG":
-                            trail = max(trail or entry, price - atr_now * 1.5)
-                        else:
-                            trail = min(trail or entry, price + atr_now * 1.5)
+                            state["breakeven_active"] = True
 
                     # 🔹 Cierre inteligente
                     if (
@@ -452,12 +366,6 @@ def main():
                             f"💰 {SYMBOL} {side} cerrado | +{profit_pct:.2f}% ✅"
                         )
                         log_trade(SYMBOL, side, entry, price, profit_pct)
-                        if profit_pct < 0:
-                            state["consecutive_losses"] = (
-                                state.get("consecutive_losses", 0) + 1
-                            )
-                        else:
-                            state["consecutive_losses"] = 0
                         state.update(
                             {
                                 "last_side": None,
@@ -465,8 +373,7 @@ def main():
                                 "trail_price": None,
                                 "breakeven_active": False,
                                 "last_pnl_pct": profit_pct,
-                                "cooldown_until": time.time()
-                                + COOLDOWN_AFTER_EXIT_SEC,  # ✅ cooldown tras salida
+                                "cooldown_until": time.time() + COOLDOWN_AFTER_EXIT_SEC,
                             }
                         )
                         save_state(SYMBOL, state)
@@ -476,8 +383,6 @@ def main():
                     save_state(SYMBOL, state)
                     continue
 
-                # ==== NUEVA ENTRADA ====
-                # Filtro de volatilidad extrema (🆕)
                 if atr_now > atr_ma * VOLATILITY_MULT_LIMIT:
                     print(
                         f"⚠️ {SYMBOL} volatilidad alta (ATR {atr_now:.2f} > {atr_ma:.2f}×{VOLATILITY_MULT_LIMIT}), no operar."
@@ -492,7 +397,6 @@ def main():
                     print(f"⏸️ {SYMBOL} sin señal clara.")
                     continue
 
-                # Position sizing teórico (🆕)
                 risk_dollar = capital * (RISK_PCT / 100)
                 pos_size = risk_dollar / max(atr_now * ATR_SL_MULT, 1e-9)
                 size_info = f"risk={RISK_PCT:.2f}%, size≈{pos_size:.4f} (u)"
@@ -524,9 +428,6 @@ def main():
             time.sleep(15)
 
 
-# ==============================
-# EJECUCIÓN
-# ==============================
 if __name__ == "__main__":
     print("✅ Binance respondió correctamente, iniciando cálculos...", flush=True)
     test_telegram()
