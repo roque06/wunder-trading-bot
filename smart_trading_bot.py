@@ -118,6 +118,7 @@ def load_state(symbol: str):
             "breakeven_active": False,
             "consecutive_losses": 0,
             "last_pnl_pct": None,
+            "sl_price": None,  # 🆕 stop-loss absoluto por ATR
         }
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -126,6 +127,7 @@ def load_state(symbol: str):
             s.setdefault("last_pnl_pct", None)
             s.setdefault("breakeven_active", False)
             s.setdefault("cooldown_until", 0)
+            s.setdefault("sl_price", None)  # 🆕
             return s
     except:
         return {
@@ -136,6 +138,7 @@ def load_state(symbol: str):
             "breakeven_active": False,
             "consecutive_losses": 0,
             "last_pnl_pct": None,
+            "sl_price": None,  # 🆕
         }
 
 
@@ -260,12 +263,14 @@ def main():
                 entry = state.get("entry_price")
                 trail = state.get("trail_price")
                 breakeven_active = state.get("breakeven_active", False)
+                sl_price = state.get("sl_price")  # 🆕
 
                 print(
                     f"⏱️ {datetime.now(UTC)} | {SYMBOL} | P={price:.2f} | EMA9={ema_f:.2f} | EMA21={ema_s:.2f} | EMA200={ema_long:.2f} | RSI={rsi:.1f} | ATR={atr_now:.2f} | Pos={side}",
                     flush=True,
                 )
 
+                # 🧱 Autopausa por pérdidas consecutivas (🆕)
                 if state.get("cooldown_until", 0) > time.time():
                     remaining = int(state["cooldown_until"] - time.time())
                     print(f"⏸️ {SYMBOL} en cooldown {remaining}s restantes...")
@@ -297,6 +302,9 @@ def main():
                     and (price < ema_long)
                 )
 
+                # =========================
+                # GESTIÓN DE POSICIÓN ACTIVA
+                # =========================
                 if side and entry:
                     profit_pct = (
                         ((price - entry) / entry * 100)
@@ -304,7 +312,69 @@ def main():
                         else ((entry - price) / entry * 100)
                     )
 
-                    # 🧠 Protección dinámica de ganancias
+                    # 🛡️ Stop-loss absoluto por ATR (🆕)
+                    if side == "LONG" and sl_price and price <= sl_price:
+                        send_signal(SYMBOL, SIGNAL_CODES[SYMBOL]["EXIT_ALL"])
+                        send_telegram_message(
+                            f"🛑 {SYMBOL} SL alcanzado (LONG) | PnL {profit_pct:.2f}%"
+                        )
+                        log_trade(SYMBOL, side, entry, price, profit_pct)
+                        state.update(
+                            {
+                                "last_side": None,
+                                "entry_price": None,
+                                "trail_price": None,
+                                "breakeven_active": False,
+                                "last_pnl_pct": profit_pct,
+                                "sl_price": None,
+                                "consecutive_losses": (
+                                    (state.get("consecutive_losses", 0) + 1)
+                                    if profit_pct < 0
+                                    else 0
+                                ),
+                                "cooldown_until": time.time() + COOLDOWN_AFTER_EXIT_SEC,
+                            }
+                        )
+                        # Autopausa si supera límite de pérdidas seguidas
+                        if state["consecutive_losses"] >= MAX_CONSECUTIVE_LOSSES:
+                            state["cooldown_until"] = time.time() + AUTO_PAUSE_SECONDS
+                            send_telegram_message(
+                                f"⏸️ Autopausa {SYMBOL} por {MAX_CONSECUTIVE_LOSSES} pérdidas seguidas ({AUTO_PAUSE_SECONDS//60} min)."
+                            )
+                        save_state(SYMBOL, state)
+                        continue
+
+                    if side == "SHORT" and sl_price and price >= sl_price:
+                        send_signal(SYMBOL, SIGNAL_CODES[SYMBOL]["EXIT_ALL"])
+                        send_telegram_message(
+                            f"🛑 {SYMBOL} SL alcanzado (SHORT) | PnL {profit_pct:.2f}%"
+                        )
+                        log_trade(SYMBOL, side, entry, price, profit_pct)
+                        state.update(
+                            {
+                                "last_side": None,
+                                "entry_price": None,
+                                "trail_price": None,
+                                "breakeven_active": False,
+                                "last_pnl_pct": profit_pct,
+                                "sl_price": None,
+                                "consecutive_losses": (
+                                    (state.get("consecutive_losses", 0) + 1)
+                                    if profit_pct < 0
+                                    else 0
+                                ),
+                                "cooldown_until": time.time() + COOLDOWN_AFTER_EXIT_SEC,
+                            }
+                        )
+                        if state["consecutive_losses"] >= MAX_CONSECUTIVE_LOSSES:
+                            state["cooldown_until"] = time.time() + AUTO_PAUSE_SECONDS
+                            send_telegram_message(
+                                f"⏸️ Autopausa {SYMBOL} por {MAX_CONSECUTIVE_LOSSES} pérdidas seguidas ({AUTO_PAUSE_SECONDS//60} min)."
+                            )
+                        save_state(SYMBOL, state)
+                        continue
+
+                    # 🧠 Protección dinámica de ganancias (trailing + breakeven)
                     if side == "LONG":
                         if profit_pct >= 3.0:
                             new_trail = max(trail or entry, price - atr_now * 1.2)
@@ -349,7 +419,7 @@ def main():
                             )
                             state["breakeven_active"] = True
 
-                    # 🔹 Cierre inteligente
+                    # 🔹 Cierre inteligente por trailing en ganancia
                     if (
                         side == "LONG"
                         and trail
@@ -373,16 +443,92 @@ def main():
                                 "trail_price": None,
                                 "breakeven_active": False,
                                 "last_pnl_pct": profit_pct,
+                                "sl_price": None,  # 🆕
+                                "consecutive_losses": (
+                                    0
+                                    if profit_pct >= 0
+                                    else (state.get("consecutive_losses", 0) + 1)
+                                ),
                                 "cooldown_until": time.time() + COOLDOWN_AFTER_EXIT_SEC,
                             }
                         )
+                        if state["consecutive_losses"] >= MAX_CONSECUTIVE_LOSSES:
+                            state["cooldown_until"] = time.time() + AUTO_PAUSE_SECONDS
+                            send_telegram_message(
+                                f"⏸️ Autopausa {SYMBOL} por {MAX_CONSECUTIVE_LOSSES} pérdidas seguidas ({AUTO_PAUSE_SECONDS//60} min)."
+                            )
                         save_state(SYMBOL, state)
                         continue
 
+                    # 🆕 Salida anticipada de seguridad (pérdida técnica sin cruce)
+                    if side == "LONG" and (rsi < 38) and (price < entry * 0.985):
+                        send_signal(SYMBOL, SIGNAL_CODES[SYMBOL]["EXIT_ALL"])
+                        send_telegram_message(
+                            f"🧯 {SYMBOL} Cierre preventivo (LONG) por debilidad RSI y -1.5%."
+                        )
+                        log_trade(SYMBOL, side, entry, price, profit_pct)
+                        state.update(
+                            {
+                                "last_side": None,
+                                "entry_price": None,
+                                "trail_price": None,
+                                "breakeven_active": False,
+                                "last_pnl_pct": profit_pct,
+                                "sl_price": None,
+                                "consecutive_losses": (
+                                    (state.get("consecutive_losses", 0) + 1)
+                                    if profit_pct < 0
+                                    else 0
+                                ),
+                                "cooldown_until": time.time() + COOLDOWN_AFTER_EXIT_SEC,
+                            }
+                        )
+                        if state["consecutive_losses"] >= MAX_CONSECUTIVE_LOSSES:
+                            state["cooldown_until"] = time.time() + AUTO_PAUSE_SECONDS
+                            send_telegram_message(
+                                f"⏸️ Autopausa {SYMBOL} por {MAX_CONSECUTIVE_LOSSES} pérdidas seguidas ({AUTO_PAUSE_SECONDS//60} min)."
+                            )
+                        save_state(SYMBOL, state)
+                        continue
+
+                    if side == "SHORT" and (rsi > 62) and (price > entry * 1.015):
+                        send_signal(SYMBOL, SIGNAL_CODES[SYMBOL]["EXIT_ALL"])
+                        send_telegram_message(
+                            f"🧯 {SYMBOL} Cierre preventivo (SHORT) por fortaleza RSI y -1.5%."
+                        )
+                        log_trade(SYMBOL, side, entry, price, profit_pct)
+                        state.update(
+                            {
+                                "last_side": None,
+                                "entry_price": None,
+                                "trail_price": None,
+                                "breakeven_active": False,
+                                "last_pnl_pct": profit_pct,
+                                "sl_price": None,
+                                "consecutive_losses": (
+                                    (state.get("consecutive_losses", 0) + 1)
+                                    if profit_pct < 0
+                                    else 0
+                                ),
+                                "cooldown_until": time.time() + COOLDOWN_AFTER_EXIT_SEC,
+                            }
+                        )
+                        if state["consecutive_losses"] >= MAX_CONSECUTIVE_LOSSES:
+                            state["cooldown_until"] = time.time() + AUTO_PAUSE_SECONDS
+                            send_telegram_message(
+                                f"⏸️ Autopausa {SYMBOL} por {MAX_CONSECUTIVE_LOSSES} pérdidas seguidas ({AUTO_PAUSE_SECONDS//60} min)."
+                            )
+                        save_state(SYMBOL, state)
+                        continue
+
+                    # Mantener trailing/estado actualizado
                     state["trail_price"] = trail
                     save_state(SYMBOL, state)
                     continue
 
+                # =========================
+                # FILTROS DE APERTURA
+                # =========================
                 if atr_now > atr_ma * VOLATILITY_MULT_LIMIT:
                     print(
                         f"⚠️ {SYMBOL} volatilidad alta (ATR {atr_now:.2f} > {atr_ma:.2f}×{VOLATILITY_MULT_LIMIT}), no operar."
@@ -397,19 +543,29 @@ def main():
                     print(f"⏸️ {SYMBOL} sin señal clara.")
                     continue
 
+                # Tamaño por riesgo teórico
                 risk_dollar = capital * (RISK_PCT / 100)
                 pos_size = risk_dollar / max(atr_now * ATR_SL_MULT, 1e-9)
                 size_info = f"risk={RISK_PCT:.2f}%, size≈{pos_size:.4f} (u)"
 
+                # Señal de entrada
                 send_signal(SYMBOL, SIGNAL_CODES[SYMBOL][f"ENTER_{side}"])
                 send_telegram_message(
                     f"🚀 {SYMBOL} Nueva entrada {side} a {price:.2f}\n<size: {size_info}>"
                 )
+
+                # Inicialización de trailing y SL (🆕)
                 trail_init = (
                     (price - atr_now * ATR_TRAIL_MULT)
                     if side == "LONG"
                     else (price + atr_now * ATR_TRAIL_MULT)
                 )
+                sl_init = (
+                    (price - atr_now * ATR_SL_MULT)
+                    if side == "LONG"
+                    else (price + atr_now * ATR_SL_MULT)
+                )
+
                 state.update(
                     {
                         "last_side": side,
@@ -417,6 +573,7 @@ def main():
                         "trail_price": trail_init,
                         "cooldown_until": 0,
                         "breakeven_active": False,
+                        "sl_price": sl_init,  # 🆕
                     }
                 )
                 save_state(SYMBOL, state)
