@@ -1142,14 +1142,19 @@ class IPHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write("Bot running ✅".encode("utf-8"))
 
 
+import threading
+
 if __name__ == "__main__":
     print("Binance OK, iniciando v6 ULTIMATE...", flush=True)
     test_telegram()
-    main()
-    socketserver.TCPServer(("", 8080), IPHandler).serve_forever()
 
+    # Servidor HTTP para mostrar IP pública
+    def start_http():
+        with socketserver.TCPServer(("", 8080), IPHandler) as httpd:
+            print("🌐 Servidor HTTP escuchando en puerto 8080 (/ip disponible)")
+            httpd.serve_forever()
 
-if __name__ == "__main__":
-    print("Binance OK, iniciando v6 ULTIMATE…", flush=True)
-    test_telegram()
+    threading.Thread(target=start_http, daemon=True).start()
+
+    # Inicia el bot principal
     main()
