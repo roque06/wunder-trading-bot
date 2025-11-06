@@ -1,0 +1,30 @@
+{
+    "RISK_PCT_BASE": 1.5,
+    "RISK_PCT_MIN": 0.5,
+    "RISK_PCT_MAX": 2.0,
+    "ATR_SL_MULT": 1.6,
+    "ATR_TRAIL_MULT": 1.5,
+    "EMA_DIFF_MARGIN": 0.0007,
+    "RSI_LONG_MIN": 38,
+    "RSI_LONG_MAX": 70,
+    "RSI_SHORT_MIN": 30,
+    "RSI_SHORT_MAX": 60,
+    "ADX_MIN": 20,
+    "VOLATILITY_MULT_LIMIT": 1.6,
+    "DAILY_MAX_LOSS_PCT": 2.0,
+    "WEEKLY_MAX_LOSS_PCT": 5.0,
+    "PROFIT_LOCK_PCT": 2.0,
+    "BREAKEVEN_TRIGGER": 1.0,
+    "COOLDOWN_AFTER_EXIT_SEC": 300,
+    "AUTO_PAUSE_SECONDS": 3600,
+    "MAX_CONSECUTIVE_LOSSES": 3,
+    "ENABLE_PARTIALS": true,
+    "PARTIAL_TAKE_PROFIT_PCT": 1.5,
+    "SKIP_UTC_HOURS": [
+        0,
+        1,
+        2,
+        3
+    ],
+    "SKIP_WEEKENDS": false
+}
