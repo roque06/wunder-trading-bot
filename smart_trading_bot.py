@@ -154,37 +154,47 @@ def save_state(symbol: str, state: dict):
 # FUNCIONES PRINCIPALES
 # ==============================
 def fetch_klines(symbol, interval, limit=500, retries=5, backoff=5):
-    url = "https://api.binance.com/api/v3/klines"
+    # 🔄 Endpoint más estable (Binance US evita bloqueos por IP)
+    primary_url = "https://api.binance.us/api/v3/klines"
+    backup_url  = "https://api.binance.com/api/v3/klines"
+
     params = {"symbol": symbol, "interval": interval, "limit": limit}
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+
     for i in range(retries):
         try:
-            r = requests.get(url, params=params, timeout=10)
+            # 🔁 Intenta primero con Binance US
+            r = requests.get(primary_url, params=params, headers=headers, timeout=10)
+            # Si Binance US no responde, prueba con Binance global
+            if r.status_code in (418, 451) or not r.ok:
+                print(f"⚠️ Endpoint US bloqueado (código {r.status_code}), probando Binance global...")
+                r = requests.get(backup_url, params=params, headers=headers, timeout=10)
+
             r.raise_for_status()
             data = r.json()
-            df = pd.DataFrame(
-                data,
-                columns=[
-                    "open_time",
-                    "open",
-                    "high",
-                    "low",
-                    "close",
-                    "volume",
-                    "close_time",
-                    "qav",
-                    "num_trades",
-                    "taker_base",
-                    "taker_quote",
-                    "ignore",
-                ],
-            )
+
+            # Limpieza de datos (aseguramos estructura)
+            clean_data = [row[:12] for row in data if isinstance(row, list) and len(row) >= 12]
+
+            df = pd.DataFrame(clean_data, columns=[
+                "open_time", "open", "high", "low", "close", "volume",
+                "close_time", "qav", "num_trades", "taker_base", "taker_quote", "ignore"
+            ])
+
+            # Conversión de tipos
             for col in ["open", "high", "low", "close"]:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
-            return df.dropna(subset=["close"])
+
+            # Elimina filas con datos faltantes
+            df = df.dropna(subset=["close"])
+
+            return df
+
         except Exception as e:
-            print(f"⚠️ Error Binance {symbol}: {e}", flush=True)
+            print(f"⚠️ Error Binance (intento {i+1}/{retries}): {e}")
             time.sleep(backoff * (i + 1))
-    raise RuntimeError(f"Binance no responde para {symbol} tras varios intentos.")
+
+    raise RuntimeError("⚠️ Binance no responde tras varios intentos.")
 
 
 def send_signal(symbol: str, code: str):
@@ -589,3 +599,4 @@ if __name__ == "__main__":
     print("✅ Binance respondió correctamente, iniciando cálculos...", flush=True)
     test_telegram()
     main()
+
