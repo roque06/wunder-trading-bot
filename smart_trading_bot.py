@@ -5,7 +5,7 @@ from datetime import datetime, UTC
 # CONFIG GENERAL
 # ==============================
 SYMBOLS = ["BTCUSDT"]
-INTERVAL = "5m"
+INTERVAL = "15m"  # ✅ timeframe recomendado
 WUNDER_WEBHOOK = "https://wtalerts.com/bot/custom"
 POLL_SECONDS = 30
 LOG_CSV = "trades_log.csv"
@@ -25,6 +25,7 @@ RSI_PERIOD = 14
 RSI_LONG_MIN, RSI_LONG_MAX = 38, 70
 RSI_SHORT_MIN, RSI_SHORT_MAX = 30, 60
 EMA_DIFF_MARGIN = 0.0007
+
 ATR_PERIOD = 14
 ATR_MULT_RANGE_BLOCK = 0.05
 ATR_ACTIVE_FACTOR = 0.8
@@ -49,7 +50,7 @@ RSI_COOLDOWN_SHORT = 55
 # RIESGO / VOLATILIDAD (🆕)
 # ==============================
 RISK_PCT = 1.5  # % del capital a arriesgar por trade (teórico)
-VOLATILITY_MULT_LIMIT = 1.6  # si ATR > ATR_MA * este múltiplo, no abrir
+VOLATILITY_MULT_LIMIT = 1.6  # si ATR_f > ATR_MA * este múltiplo, no abrir
 MAX_CONSECUTIVE_LOSSES = 3  # autopausa tras N pérdidas seguidas
 AUTO_PAUSE_SECONDS = 3600  # 1h de pausa
 
@@ -58,6 +59,8 @@ AUTO_PAUSE_SECONDS = 3600  # 1h de pausa
 # ==============================
 SIGNAL_CODES = {
     "BTCUSDT": {
+        # Nota: el sufijo "5M" es solo texto; si tu canal de Wunder depende del timeframe,
+        # cámbialo a "15M" para mantener coherencia visual.
         "ENTER_LONG": "ENTER-LONG_Binance_BTCUSDT_BTC-BOT_5M_d99ea7958787b1d1fa0e0978",
         "ENTER_SHORT": "ENTER-SHORT_Binance_BTCUSDT_BTC-BOT_5M_d99ea7958787b1d1fa0e0978",
         "EXIT_ALL": "EXIT-ALL_Binance_BTCUSDT_BTC-BOT_5M_d99ea7958787b1d1fa0e0978",
@@ -218,15 +221,28 @@ def send_signal(symbol: str, code: str):
         print(f"⚠️ Error enviando señal {symbol}: {e}", flush=True)
 
 
+# ==============================
+# INDICADORES (versión avanzada)
+# ==============================
 def compute_indicators(df):
+    # EMAs
     df["ema_fast"] = ta.trend.ema_indicator(df["close"], window=EMA_FAST)
     df["ema_slow"] = ta.trend.ema_indicator(df["close"], window=EMA_SLOW)
     df["ema_long"] = ta.trend.ema_indicator(df["close"], window=EMA_LONG)
+
+    # RSI base + suavizado y pendiente
     df["rsi"] = ta.momentum.rsi(df["close"], window=RSI_PERIOD)
-    df["atr"] = ta.volatility.average_true_range(
-        df["high"], df["low"], df["close"], window=ATR_PERIOD
-    )
+    df["rsi_smooth"] = ta.trend.ema_indicator(df["rsi"], window=5)
+    df["rsi_slope"] = df["rsi_smooth"].diff()
+
+    # ATR 15m y su media (estable)
+    df["atr"] = ta.volatility.average_true_range(df["high"], df["low"], df["close"], window=ATR_PERIOD)
     df["atr_ma"] = df["atr"].rolling(ATR_PERIOD).mean()
+
+    # Volumen promedio 20 velas
+    df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
+    df["vol_ma"] = df["volume"].rolling(20).mean()
+
     return df
 
 
@@ -261,22 +277,27 @@ def main():
         try:
             for SYMBOL in SYMBOLS:
                 state = load_state(SYMBOL)
-                df = compute_indicators(fetch_klines(SYMBOL, INTERVAL, 300))
-                price = df["close"].iloc[-1]
-                ema_f, ema_s = df["ema_fast"].iloc[-1], df["ema_slow"].iloc[-1]
-                ema_long = df["ema_long"].iloc[-1]
-                rsi = df["rsi"].iloc[-1]
-                atr_now = df["atr"].iloc[-1]
-                atr_ma = df["atr_ma"].iloc[-1]
+
+                df_raw = fetch_klines(SYMBOL, INTERVAL, 300)
+                df = compute_indicators(df_raw)
+
+                price = float(df["close"].iloc[-1])
+                ema_f, ema_s = float(df["ema_fast"].iloc[-1]), float(df["ema_slow"].iloc[-1])
+                ema_long = float(df["ema_long"].iloc[-1])
+                rsi = float(df["rsi"].iloc[-1])
+
+                # ATR rápido y ATR estable (media)
+                atr_fast = float(df["atr"].iloc[-1])
+                atr_stable = float(df["atr_ma"].iloc[-1])
 
                 side = state.get("last_side")
                 entry = state.get("entry_price")
                 trail = state.get("trail_price")
                 breakeven_active = state.get("breakeven_active", False)
-                sl_price = state.get("sl_price")  # 🆕
+                sl_price = state.get("sl_price")
 
                 print(
-                    f"⏱️ {datetime.now(UTC)} | {SYMBOL} | P={price:.2f} | EMA9={ema_f:.2f} | EMA21={ema_s:.2f} | EMA200={ema_long:.2f} | RSI={rsi:.1f} | ATR={atr_now:.2f} | Pos={side}",
+                    f"⏱️ {datetime.now(UTC)} | {SYMBOL} | P={price:.2f} | EMA9={ema_f:.2f} | EMA21={ema_s:.2f} | EMA200={ema_long:.2f} | RSI={rsi:.1f} | ATRf={atr_fast:.2f} | ATRma={atr_stable:.2f} | Pos={side}",
                     flush=True,
                 )
 
@@ -286,43 +307,22 @@ def main():
                     print(f"⏸️ {SYMBOL} en cooldown {remaining}s restantes...")
                     continue
 
-                last_close = df["close"].iloc[-1]
-                prev_close = df["close"].iloc[-2]
-                last_open = df["open"].iloc[-1]
-
-                ema_cross_up_now = ema_f > ema_s * (1 + EMA_DIFF_MARGIN)
-                ema_cross_up_prev = df["ema_fast"].iloc[-2] > df["ema_slow"].iloc[-2]
-                ema_cross_dn_now = ema_f < ema_s * (1 - EMA_DIFF_MARGIN)
-                ema_cross_dn_prev = df["ema_fast"].iloc[-2] < df["ema_slow"].iloc[-2]
-
-                bullish_ok = (
-                    ema_cross_up_now
-                    and ema_cross_up_prev
-                    and (RSI_LONG_MIN <= rsi <= RSI_LONG_MAX)
-                    and (last_close > last_open)
-                    and (last_close > prev_close)
-                    and (price > ema_long)
-                )
-                bearish_ok = (
-                    ema_cross_dn_now
-                    and ema_cross_dn_prev
-                    and (RSI_SHORT_MIN <= rsi <= RSI_SHORT_MAX)
-                    and (last_close < last_open)
-                    and (last_close < prev_close)
-                    and (price < ema_long)
-                )
+                last_close = float(df["close"].iloc[-1])
+                prev_close = float(df["close"].iloc[-2])
+                last_open = float(df["open"].iloc[-1])
 
                 # =========================
                 # GESTIÓN DE POSICIÓN ACTIVA
                 # =========================
                 if side and entry:
+                    entry = float(entry)
                     profit_pct = (
                         ((price - entry) / entry * 100)
                         if side == "LONG"
                         else ((entry - price) / entry * 100)
                     )
 
-                    # 🛡️ Stop-loss absoluto por ATR (🆕)
+                    # 🛡️ Stop-loss absoluto por ATR (estable)
                     if side == "LONG" and sl_price and price <= sl_price:
                         send_signal(SYMBOL, SIGNAL_CODES[SYMBOL]["EXIT_ALL"])
                         send_telegram_message(
@@ -345,7 +345,6 @@ def main():
                                 "cooldown_until": time.time() + COOLDOWN_AFTER_EXIT_SEC,
                             }
                         )
-                        # Autopausa si supera límite de pérdidas seguidas
                         if state["consecutive_losses"] >= MAX_CONSECUTIVE_LOSSES:
                             state["cooldown_until"] = time.time() + AUTO_PAUSE_SECONDS
                             send_telegram_message(
@@ -387,7 +386,7 @@ def main():
                     # 🧠 Protección dinámica de ganancias (trailing + breakeven)
                     if side == "LONG":
                         if profit_pct >= 3.0:
-                            new_trail = max(trail or entry, price - atr_now * 1.2)
+                            new_trail = max(trail or entry, price - atr_stable * 1.2)
                             if new_trail > (trail or 0):
                                 trail = new_trail
                                 send_telegram_message(
@@ -409,7 +408,7 @@ def main():
 
                     elif side == "SHORT":
                         if profit_pct >= 3.0:
-                            new_trail = min(trail or entry, price + atr_now * 1.2)
+                            new_trail = min(trail or entry, price + atr_stable * 1.2)
                             if new_trail < (trail or 999999):
                                 trail = new_trail
                                 send_telegram_message(
@@ -537,11 +536,47 @@ def main():
                     continue
 
                 # =========================
-                # FILTROS DE APERTURA
+                # SEÑALES DE ENTRADA
                 # =========================
-                if atr_now > atr_ma * VOLATILITY_MULT_LIMIT:
+                # Confirmación de cruce EMA mantenido ≥2 velas
+                ema_cross_up_now  = ema_f > ema_s * (1 + EMA_DIFF_MARGIN)
+                ema_cross_up_prev1 = df["ema_fast"].iloc[-2] > df["ema_slow"].iloc[-2]
+                ema_cross_up_prev2 = df["ema_fast"].iloc[-3] > df["ema_slow"].iloc[-3]
+
+                ema_cross_dn_now  = ema_f < ema_s * (1 - EMA_DIFF_MARGIN)
+                ema_cross_dn_prev1 = df["ema_fast"].iloc[-2] < df["ema_slow"].iloc[-2]
+                ema_cross_dn_prev2 = df["ema_fast"].iloc[-3] < df["ema_slow"].iloc[-3]
+
+                rsi_slope_now = float(df["rsi_slope"].iloc[-1])
+                vol_now = float(df["volume"].iloc[-1])
+                vol_ma  = float(df["vol_ma"].iloc[-1])
+
+                bullish_ok = (
+                    ema_cross_up_now
+                    and ema_cross_up_prev1
+                    and ema_cross_up_prev2
+                    and (RSI_LONG_MIN <= rsi <= RSI_LONG_MAX)
+                    and (rsi_slope_now > 0)            # pendiente RSI positiva
+                    and (price > ema_long)
+                    and (vol_now > vol_ma)             # confirmación de volumen
+                )
+
+                bearish_ok = (
+                    ema_cross_dn_now
+                    and ema_cross_dn_prev1
+                    and ema_cross_dn_prev2
+                    and (RSI_SHORT_MIN <= rsi <= RSI_SHORT_MAX)
+                    and (rsi_slope_now < 0)            # pendiente RSI negativa
+                    and (price < ema_long)
+                    and (vol_now > vol_ma)
+                )
+
+                # =========================
+                # FILTRO DE VOLATILIDAD
+                # =========================
+                if atr_fast > atr_stable * VOLATILITY_MULT_LIMIT:
                     print(
-                        f"⚠️ {SYMBOL} volatilidad alta (ATR {atr_now:.2f} > {atr_ma:.2f}×{VOLATILITY_MULT_LIMIT}), no operar."
+                        f"⚠️ {SYMBOL} volatilidad alta (ATR {atr_fast:.2f} > {atr_stable:.2f}×{VOLATILITY_MULT_LIMIT}), no operar."
                     )
                     continue
 
@@ -553,9 +588,9 @@ def main():
                     print(f"⏸️ {SYMBOL} sin señal clara.")
                     continue
 
-                # Tamaño por riesgo teórico
+                # Tamaño por riesgo teórico usando ATR estable
                 risk_dollar = capital * (RISK_PCT / 100)
-                pos_size = risk_dollar / max(atr_now * ATR_SL_MULT, 1e-9)
+                pos_size = risk_dollar / max(atr_stable * ATR_SL_MULT, 1e-9)
                 size_info = f"risk={RISK_PCT:.2f}%, size≈{pos_size:.4f} (u)"
 
                 # Señal de entrada
@@ -564,16 +599,16 @@ def main():
                     f"🚀 {SYMBOL} Nueva entrada {side} a {price:.2f}\n<size: {size_info}>"
                 )
 
-                # Inicialización de trailing y SL (🆕)
+                # Inicialización de trailing y SL con ATR estable
                 trail_init = (
-                    (price - atr_now * ATR_TRAIL_MULT)
+                    (price - atr_stable * ATR_TRAIL_MULT)
                     if side == "LONG"
-                    else (price + atr_now * ATR_TRAIL_MULT)
+                    else (price + atr_stable * ATR_TRAIL_MULT)
                 )
                 sl_init = (
-                    (price - atr_now * ATR_SL_MULT)
+                    (price - atr_stable * ATR_SL_MULT)
                     if side == "LONG"
-                    else (price + atr_now * ATR_SL_MULT)
+                    else (price + atr_stable * ATR_SL_MULT)
                 )
 
                 state.update(
@@ -583,7 +618,7 @@ def main():
                         "trail_price": trail_init,
                         "cooldown_until": 0,
                         "breakeven_active": False,
-                        "sl_price": sl_init,  # 🆕
+                        "sl_price": sl_init,
                     }
                 )
                 save_state(SYMBOL, state)
@@ -599,4 +634,3 @@ if __name__ == "__main__":
     print("✅ Binance respondió correctamente, iniciando cálculos...", flush=True)
     test_telegram()
     main()
-
