@@ -619,14 +619,14 @@ def main():
 
                 # Filtro horario
                 now_utc = datetime.now(UTC)
-                if SKIP_WEEKENDS and now_utc.weekday() >= 5:
-                    print(f"📅 {SYMBOL} fin de semana, no operar.")
-                    continue
-                if now_utc.hour in SKIP_UTC_HOURS:
-                    print(
-                        f"🌙 {SYMBOL} horario muerto UTC {now_utc.hour:02d}, no operar."
-                    )
-                    continue
+               # if SKIP_WEEKENDS and now_utc.weekday() >= 5:
+                  #  print(f"📅 {SYMBOL} fin de semana, no operar.")
+                 #   continue
+              #  if now_utc.hour in SKIP_UTC_HOURS:
+                   # print(
+                      #  f"🌙 {SYMBOL} horario muerto UTC {now_utc.hour:02d}, no operar."
+                   # )
+                   # continue
 
                 # Datos multi-timeframe
                 df15 = compute_indicators(fetch_klines(SYMBOL, INTERVAL, 300))
@@ -1158,3 +1158,4 @@ if __name__ == "__main__":
 
     # Inicia el bot principal
     main()
+
