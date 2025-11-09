@@ -1,7 +1,7 @@
 import os, time, json, requests, pandas as pd, ta
 from datetime import datetime, UTC, timedelta
 import http.server, socketserver, requests
-
+NOW_UTC = lambda: pd.Timestamp.now(tz="UTC")
 # =====================================================
 # SMART TRADING BOT v6 ULTIMATE (BTCUSDT) - Adaptativo
 # =====================================================
@@ -404,18 +404,26 @@ def check_drawdown_limits():
     if df.empty:
         return (False, False, False)
     try:
-        df["time"] = pd.to_datetime(df["time"], errors="coerce")
+        # Fuerza timestamps con zona UTC
+        df["time"] = pd.to_datetime(df["time"], errors="coerce", utc=True)
         df["profit_pct"] = pd.to_numeric(df["profit_pct"], errors="coerce")
-        now = datetime.now(UTC)
-        today = df[df["time"].dt.date == now.date()]
-        week = df[df["time"] >= (now - pd.Timedelta(days=7))]
+
+        now_ts = pd.Timestamp.now(tz="UTC")                 # pandas Timestamp (aware)
+        start_week = now_ts - pd.Timedelta(days=7)
+
+        # “Hoy” comparando por fecha en UTC
+        today = df[df["time"].dt.date == now_ts.date()]
+        # Últimos 7 días con tipos compatibles
+        week = df[df["time"] >= start_week]
+
         day_sum = today["profit_pct"].sum()
         week_sum = week["profit_pct"].sum()
+
         profit_lock = day_sum >= PROFIT_LOCK_PCT
         day_limit = day_sum <= -DAILY_MAX_LOSS_PCT
         week_limit = week_sum <= -WEEKLY_MAX_LOSS_PCT
         return day_limit, week_limit, profit_lock
-    except:
+    except Exception:
         return (False, False, False)
 
 
@@ -473,6 +481,7 @@ def ml_score(features):
 ML_THRESHOLD = 0.0  # si quieres ser más estricto, súbelo a 1.0
 
 
+
 # ==============================
 # AUTO-OPTIMIZACIÓN SEMANAL
 # ==============================
@@ -485,17 +494,23 @@ def auto_optimize_params():
     Reglas simples y conservadoras.
     """
     df = read_trades()
-    now = datetime.now(UTC)
-    week_df = df[
-        pd.to_datetime(df.get("time", pd.Series([])), errors="coerce")
-        >= (now - timedelta(days=7))
-    ]
+
+    # 🔧 Normaliza las fechas a pandas.Timestamp con zona UTC
+    df["time"] = pd.to_datetime(df.get("time", pd.Series([])), errors="coerce", utc=True)
+    now_ts = pd.Timestamp.now(tz="UTC")
+    start_week = now_ts - pd.Timedelta(days=7)
+
+    # Filtra las operaciones de los últimos 7 días con tipos compatibles
+    week_df = df[df["time"] >= start_week]
+
     if week_df.empty or "profit_pct" not in week_df.columns:
         return None  # nada que optimizar
 
+    # Limpieza de datos numéricos
     week_df["profit_pct"] = pd.to_numeric(
         week_df["profit_pct"], errors="coerce"
     ).fillna(0.0)
+
     n = len(week_df)
     wins = (week_df["profit_pct"] > 0).sum()
     winrate = wins / max(n, 1)
@@ -549,6 +564,7 @@ def auto_optimize_params():
     except Exception as e:
         print("⚠️ Error guardando params.json:", e, flush=True)
         return None
+
 
 
 def is_sunday_utc(dt: datetime) -> bool:
@@ -1158,4 +1174,5 @@ if __name__ == "__main__":
 
     # Inicia el bot principal
     main()
+
 
